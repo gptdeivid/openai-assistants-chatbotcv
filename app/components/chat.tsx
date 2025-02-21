@@ -7,6 +7,7 @@ import Markdown from "react-markdown";
 // @ts-expect-error - no types for this yet
 import { AssistantStreamEvent } from "openai/resources/beta/assistants/assistants";
 import { RequiredActionFunctionToolCall } from "openai/resources/beta/threads/runs/runs";
+import { extractPdfContent } from "../utils/pdfUtils";
 
 type MessageProps = {
   role: "user" | "assistant" | "code";
@@ -64,6 +65,10 @@ const Chat = ({
   const [messages, setMessages] = useState([]);
   const [inputDisabled, setInputDisabled] = useState(false);
   const [threadId, setThreadId] = useState("");
+  const [selectedPdf, setSelectedPdf] = useState<{ name: string; content: string } | null>(null);
+  const [isProcessingPdf, setIsProcessingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // automatically scroll to bottom of chat
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -118,16 +123,51 @@ const Chat = ({
     handleReadableStream(stream);
   };
 
+  const handlePdfUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'application/pdf') {
+      setPdfError('Please select a PDF file');
+      return;
+    }
+
+    try {
+      setIsProcessingPdf(true);
+      setPdfError(null);
+      console.log('Starting PDF upload for:', file.name);
+      
+      const { text, name } = await extractPdfContent(file);
+      console.log('PDF processed successfully:', name);
+      
+      setSelectedPdf({ name, content: text });
+    } catch (error) {
+      console.error('Error processing PDF:', error);
+      setPdfError('Failed to process PDF. Please try again.');
+      setSelectedPdf(null);
+    } finally {
+      setIsProcessingPdf(false);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!userInput.trim()) return;
-    sendMessage(userInput);
+    
+    // Combine PDF content with user input if PDF is selected
+    const messageContent = selectedPdf 
+      ? `PDF Content from ${selectedPdf.name}:\n${selectedPdf.content}\n\nUser Query: ${userInput}`
+      : userInput;
+    
+    sendMessage(messageContent);
     setMessages((prevMessages) => [
       ...prevMessages,
       { role: "user", text: userInput },
     ]);
     setUserInput("");
     setInputDisabled(true);
+    setSelectedPdf(null); // Clear PDF after sending
+    if (fileInputRef.current) fileInputRef.current.value = ''; // Reset file input
     scrollToBottom();
   };
 
@@ -249,31 +289,76 @@ const Chat = ({
   }
 
   return (
-    <div className={styles.chatContainer}>
-      <div className={styles.messages}>
-        {messages.map((msg, index) => (
-          <Message key={index} role={msg.role} text={msg.text} />
+    <div className={styles.chat}>
+      {selectedPdf && (
+        <div className={styles.fileHeader}>
+          <span className={styles.fileIcon}>📎</span>
+          <span className={styles.fileName}>{selectedPdf.name}</span>
+          <button 
+            className={styles.clearFile} 
+            onClick={() => {
+              setSelectedPdf(null);
+              setPdfError(null);
+              if (fileInputRef.current) fileInputRef.current.value = '';
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      <div className={styles.messagesContainer}>
+        {messages.map((message, index) => (
+          <Message key={index} role={message.role} text={message.text} />
         ))}
         <div ref={messagesEndRef} />
       </div>
-      <form
-        onSubmit={handleSubmit}
-        className={`${styles.inputForm} ${styles.clearfix}`}
-      >
-        <input
-          type="text"
-          className={styles.input}
-          value={userInput}
-          onChange={(e) => setUserInput(e.target.value)}
-          placeholder="Enter your question"
-        />
-        <button
-          type="submit"
-          className={styles.button}
-          disabled={inputDisabled}
-        >
-          Send
-        </button>
+      <form onSubmit={handleSubmit} className={styles.inputForm}>
+        {isProcessingPdf && (
+          <div className={styles.processingFile}>
+            <div className={styles.loadingSpinner}></div>
+            Processing PDF...
+          </div>
+        )}
+        {pdfError && (
+          <div className={styles.errorMessage}>
+            ⚠️ {pdfError}
+          </div>
+        )}
+        <div className={styles.inputContainer}>
+          <input
+            type="file"
+            accept=".pdf"
+            onChange={handlePdfUpload}
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+          />
+          <button
+            type="button"
+            className={`${styles.clipButton} ${isProcessingPdf ? styles.processing : ''}`}
+            onClick={() => {
+              setPdfError(null);
+              fileInputRef.current?.click();
+            }}
+            disabled={inputDisabled || isProcessingPdf}
+          >
+            📎
+          </button>
+          <input
+            type="text"
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            placeholder={isProcessingPdf ? "Processing PDF..." : "Type your message..."}
+            disabled={inputDisabled || isProcessingPdf}
+            className={styles.input}
+          />
+          <button 
+            type="submit" 
+            disabled={inputDisabled || !userInput.trim() || isProcessingPdf}
+            className={`${styles.button} ${isProcessingPdf ? styles.processing : ''}`}
+          >
+            Send
+          </button>
+        </div>
       </form>
     </div>
   );
